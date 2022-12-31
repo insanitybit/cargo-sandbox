@@ -57,7 +57,8 @@ async fn get_or_create_container(
         project_name
     )];
 
-    let user = format!("{}:{DOCKER_USER}", users::get_current_uid());
+    // let user = format!("{}:{DOCKER_USER}", users::get_current_uid());
+    let user = "".into();
 
     client
         .create_container(CreateContainerArgs {
@@ -86,11 +87,11 @@ async fn get_or_create_container(
 
 async fn start_container(client: &Client, container: &ContainerSummary) -> eyre::Result<()> {
     match container.state.as_str() {
-        state @ ("created" | "dead" | "exited") => {
+        state @ ("created" | "dead" | "exited" | "paused") => {
             println!("Container is {state} - starting it");
             client.start_container(&container.id).await?;
         }
-        state @ ("running" | "paused") => {
+        state @ "running" => {
             println!("Container is already running: {state}");
         }
         other => {
@@ -127,6 +128,7 @@ async fn cargo_build(client: &Client, project_name: &str) -> eyre::Result<()> {
 async fn cargo_check(client: &Client, project_name: &str) -> eyre::Result<()> {
     let build_container =
         get_or_create_container(client, project_name, ContainerType::Build, false).await?;
+    println!("{:#?}", build_container);
     start_container(client, &build_container).await?;
 
     println!("executing command");
@@ -204,6 +206,7 @@ fn get_project_name() -> String {
         .as_os_str()
         .to_str()
         .unwrap();
+    println!("project name: {}", project_name);
     project_name.to_string()
 }
 

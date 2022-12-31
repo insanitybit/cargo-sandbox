@@ -140,7 +140,6 @@ impl Client {
                 continue;
             }
             print!("{}", String::from_utf8_lossy(&chunk));
-            tokio::task::yield_now().await;
         }
 
         Ok(StartExecResponse {})
