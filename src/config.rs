@@ -10,15 +10,13 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// alias for `cargo check`
-    Check {
-    },
+    Check {},
     /// alias for `cargo build`
-    Build {
-    },
+    Build {},
     /// alias for `cargo publish`
     Publish {
         /// cargo publish --token
         #[clap(short, long)]
-        token: String,  // todo: use a Secret crate
+        token: String, // todo: use a Secret crate
     },
 }

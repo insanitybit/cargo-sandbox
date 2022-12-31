@@ -1,18 +1,18 @@
-use clap::{Parser};
+use clap::Parser;
 use maplit::hashmap;
 
+use crate::config::{Cli, Command};
 use container_type::ContainerType;
 use dockerapi::client::Client;
-use crate::config::{Cli, Command};
 
 use crate::dockerapi::container_summary::ContainerSummary;
 use crate::dockerapi::create_container_args::CreateContainerArgs;
 use crate::dockerapi::create_exec_args::CreateExecArgs;
 
+pub mod config;
 pub mod container;
 pub mod container_type;
 pub mod dockerapi;
-pub mod config;
 
 const DOCKER_USER: &'static str = "cargo-sandbox-user";
 
@@ -148,16 +148,12 @@ async fn cargo_check(client: &Client, project_name: &str) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn cargo_publish(
-    client: &Client,
-    project_name: &str,
-    token: &str,
-) -> eyre::Result<()> {
+async fn cargo_publish(client: &Client, project_name: &str, token: &str) -> eyre::Result<()> {
     println!("building");
     let build_container =
         get_or_create_container(client, project_name, ContainerType::Publish, true).await?;
     start_container(client, &build_container).await?;
-    
+
     println!("publishing");
 
     client
@@ -201,7 +197,13 @@ fn should_pass_key(key: &str) -> bool {
 
 fn get_project_name() -> String {
     let current_dir = std::env::current_dir().unwrap();
-    let project_name = current_dir.components().last().unwrap().as_os_str().to_str().unwrap();
+    let project_name = current_dir
+        .components()
+        .last()
+        .unwrap()
+        .as_os_str()
+        .to_str()
+        .unwrap();
     project_name.to_string()
 }
 
