@@ -1,0 +1,18 @@
+[package]
+name = "cargo-sandbox"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.0.18", features = ["derive", "env"] }
+eyre = "0.6.8"
+futures = "0.3.25"
+hyper = { version = "0.14.20", features = ["client", "stream", "tcp", "full"] }
+maplit = "1.0.2"
+serde = { version = "1.0.147", features = ["derive"] }
+serde_json = "1.0.87"
+serde_url_params = "0.2.1"
+tokio = { version = "1.21.2", features = ["macros", "net", "full"] }
+users = "0.11.0"
