@@ -1,9 +1,15 @@
 [package]
 name = "cargo-sandbox"
+authors = ["Colin O'Brien <insanitybit@gmail.com>"]
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+license = "MIT"
+description = """
+`cargo-sandbox` is a near drop-in replacement for `cargo` that runs commands in a sandboxed environment.
+"""
+documentation = "https://github.com/insanitybit/cargo-sandbox"
+keywords = ["cargo", "sandbox"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4.0.18", features = ["derive", "env"] }
