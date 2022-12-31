@@ -28,8 +28,8 @@ async fn find_container(
             filters: Some(
                 serde_json::json!({
                     "label": [
-                        format!("cargo-sandboxed.project-name={}", project_name),
-                        format!("cargo-sandboxed.container-type={}", container_type.as_str()),
+                        format!("cargo-sandbox.project-name={}", project_name),
+                        format!("cargo-sandbox.container-type={}", container_type.as_str()),
                     ]
                 })
                 .to_string(),
@@ -57,17 +57,16 @@ async fn get_or_create_container(
         project_name
     )];
 
-    // let user = format!("{}:{DOCKER_USER}", users::get_current_uid());
-    let user = "".into();
+    let user = DOCKER_USER.into();
 
     client
         .create_container(CreateContainerArgs {
             cmd: vec!["sleep".into(), "infinity".into()],
-            image: format!("cargo-sandboxed-{}", container_type.as_str()),
+            image: format!("cargo-sandbox-{}", container_type.as_str()),
             labels: hashmap! {
-                "cargo-sandboxed.version".into() => env!("CARGO_PKG_VERSION").to_string(),
-                "cargo-sandboxed.project-name".into() => project_name.into(),
-                "cargo-sandboxed.container-type".into() => container_type.as_str().into(),
+                "cargo-sandbox.version".into() => env!("CARGO_PKG_VERSION").to_string(),
+                "cargo-sandbox.project-name".into() => project_name.into(),
+                "cargo-sandbox.container-type".into() => container_type.as_str().into(),
             },
             working_dir: format!("/home/{DOCKER_USER}/{project_name}"),
             binds,
