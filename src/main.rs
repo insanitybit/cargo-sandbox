@@ -1,7 +1,5 @@
-use clap::Parser;
 use maplit::hashmap;
 
-use crate::config::{Cli, Command};
 use container_type::ContainerType;
 use dockerapi::client::Client;
 
@@ -100,7 +98,7 @@ async fn start_container(client: &Client, container: &ContainerSummary) -> eyre:
     Ok(())
 }
 
-async fn cargo_build(client: &Client, project_name: &str) -> eyre::Result<()> {
+async fn cargo_build(client: &Client, project_name: &str, args: Vec<String>) -> eyre::Result<()> {
     let build_container =
         get_or_create_container(client, project_name, ContainerType::Build, false).await?;
     start_container(client, &build_container).await?;
@@ -115,7 +113,7 @@ async fn cargo_build(client: &Client, project_name: &str) -> eyre::Result<()> {
                 attach_stderr: true,
                 detach_keys: "".to_string(),
                 tty: false,
-                cmd: vec!["cargo".into(), "build".into()],
+                cmd: [vec!["cargo".into()], args].concat(),
                 env: get_env(),
             },
         )
@@ -124,13 +122,13 @@ async fn cargo_build(client: &Client, project_name: &str) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn cargo_check(client: &Client, project_name: &str) -> eyre::Result<()> {
+async fn cargo_check(client: &Client, project_name: &str, args: Vec<String>) -> eyre::Result<()> {
     let build_container =
         get_or_create_container(client, project_name, ContainerType::Build, false).await?;
-    println!("{:#?}", build_container);
     start_container(client, &build_container).await?;
 
-    println!("executing command");
+    // println!("executing command, {:#?}", [vec!["cargo".into()], args.clone()].concat());
+
     client
         .exec(
             build_container.id,
@@ -140,7 +138,7 @@ async fn cargo_check(client: &Client, project_name: &str) -> eyre::Result<()> {
                 attach_stderr: true,
                 detach_keys: "".to_string(),
                 tty: false,
-                cmd: vec!["cargo".into(), "check".into()],
+                cmd: [vec!["cargo".into()], args].concat(),
                 env: get_env(),
             },
         )
@@ -149,7 +147,39 @@ async fn cargo_check(client: &Client, project_name: &str) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn cargo_publish(client: &Client, project_name: &str, token: &str) -> eyre::Result<()> {
+async fn cargo_publish(client: &Client, project_name: &str, args: Vec<String>) -> eyre::Result<()> {
+    println!("building");
+    // If `--no-verify` is provided, don't run the build
+    let mut publish_args = args.clone();
+    if !args.contains(&"--no-verify".to_string()) {
+        cargo_check(client, project_name, vec!["check".into()]).await?;
+        publish_args.insert(0, "--no-verify".to_string());
+    }
+
+    println!("publishing");
+    let build_container =
+        get_or_create_container(client, project_name, ContainerType::Publish, false).await?;
+    start_container(client, &build_container).await?;
+    // Ensure that `--no-verify` is passed to cargo publish
+    client
+        .exec(
+            build_container.id,
+            CreateExecArgs {
+                attach_stdin: true,
+                attach_stdout: true,
+                attach_stderr: true,
+                detach_keys: "".to_string(),
+                tty: false,
+                cmd: [vec!["cargo".into()], publish_args].concat(),
+                env: get_env(),
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+
+async fn cargo_login(client: &Client, project_name: &str, args: Vec<String>) -> eyre::Result<()> {
     println!("building");
     let build_container =
         get_or_create_container(client, project_name, ContainerType::Publish, true).await?;
@@ -166,12 +196,7 @@ async fn cargo_publish(client: &Client, project_name: &str, token: &str) -> eyre
                 attach_stderr: true,
                 detach_keys: "".to_string(),
                 tty: false,
-                cmd: vec![
-                    "cargo".into(),
-                    "publish".into(),
-                    "--token".into(),
-                    token.into(),
-                ],
+                cmd: [vec!["cargo".into()], args].concat(),
                 env: get_env(),
             },
         )
@@ -211,20 +236,36 @@ fn get_project_name() -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+    let mut args: Vec<String> = std::env::args().collect();
+    println!("{:?}", args);
 
-    match cli.command {
-        Command::Build {} => {
+    let argv = args.split_off(1);
+    let _argc = args;
+    println!("{_argc:?} - {argv:?}");
+
+    match argv[0].as_ref() {
+        "build" => {
+            let project_name = get_project_name();
             let client = Client::local("/var/run/docker.sock");
-            cargo_build(&client, &get_project_name()).await?;
+            cargo_build(&client, &project_name, argv).await?;
         }
-        Command::Check {} => {
+        "check" => {
+            let project_name = get_project_name();
             let client = Client::local("/var/run/docker.sock");
-            cargo_check(&client, &get_project_name()).await?;
+            cargo_check(&client, &project_name, argv).await?;
         }
-        Command::Publish { token } => {
+        "publish" => {
+            let project_name = get_project_name();
             let client = Client::local("/var/run/docker.sock");
-            cargo_publish(&client, &get_project_name(), &token).await?;
+            cargo_publish(&client, &project_name, argv).await?;
+        }
+        "login" => {
+            let project_name = get_project_name();
+            let client = Client::local("/var/run/docker.sock");
+            cargo_login(&client, &project_name, argv).await?;
+        }
+        unknown => {
+            println!("Unknown command: {unknown}");
         }
     }
 

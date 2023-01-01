@@ -12,7 +12,6 @@ keywords = ["cargo", "sandbox"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-clap = { version = "4.0.18", features = ["derive", "env"] }
 eyre = "0.6.8"
 futures = "0.3.25"
 hyper = { version = "0.14.20", features = ["client", "stream", "tcp", "full"] }
