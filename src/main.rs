@@ -103,6 +103,9 @@ async fn cargo_build(client: &Client, project_name: &str, args: Vec<String>) -> 
         get_or_create_container(client, project_name, ContainerType::Build, false).await?;
     start_container(client, &build_container).await?;
 
+    let cargo_cmd = "source ~/.profile && riff run cargo ".to_owned() + &args.join(" ");
+    let cmd = vec!["/bin/bash".into(), "-c".into(), cargo_cmd];
+
     println!("executing command");
     client
         .exec(
@@ -113,7 +116,7 @@ async fn cargo_build(client: &Client, project_name: &str, args: Vec<String>) -> 
                 attach_stderr: true,
                 detach_keys: "".to_string(),
                 tty: false,
-                cmd: [vec!["cargo".into()], args].concat(),
+                cmd,
                 env: get_env(),
             },
         )
@@ -127,7 +130,11 @@ async fn cargo_check(client: &Client, project_name: &str, args: Vec<String>) -> 
         get_or_create_container(client, project_name, ContainerType::Build, false).await?;
     start_container(client, &build_container).await?;
 
-    // println!("executing command, {:#?}", [vec!["cargo".into()], args.clone()].concat());
+    let cargo_cmd = "source ~/.profile && riff run cargo ".to_owned() + &args.join(" ");
+    let cmd = vec!["/bin/bash".into(), "-c".into(), cargo_cmd];
+
+    println!("executing command, {:#?}", &cmd);
+    println!("container id {}", &build_container.id);
 
     client
         .exec(
@@ -138,7 +145,7 @@ async fn cargo_check(client: &Client, project_name: &str, args: Vec<String>) -> 
                 attach_stderr: true,
                 detach_keys: "".to_string(),
                 tty: false,
-                cmd: [vec!["cargo".into()], args].concat(),
+                cmd,
                 env: get_env(),
             },
         )
@@ -185,7 +192,7 @@ async fn cargo_login(client: &Client, project_name: &str, args: Vec<String>) -> 
         get_or_create_container(client, project_name, ContainerType::Publish, true).await?;
     start_container(client, &build_container).await?;
 
-    println!("publishing");
+    println!("login");
 
     client
         .exec(
