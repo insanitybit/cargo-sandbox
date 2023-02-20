@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.4
-
 ARG RUST_VERSION=1.63
 
 FROM rust:${RUST_VERSION}-slim-bullseye AS base
@@ -10,8 +8,9 @@ SHELL ["/bin/bash", "-o", "errexit", "-o", "nounset", "-o", "pipefail", "-c"]
 RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=locked,id=rust-base-apt \
     apt-get update \
     && apt-get install --yes --no-install-recommends \
-        curl=7.74.0-1.3+deb11u3 \
+        curl \
         xz-utils \
+        coreutils \
     && adduser \
         --disabled-password \
         --gecos '' \

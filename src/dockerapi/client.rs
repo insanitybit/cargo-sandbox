@@ -34,6 +34,22 @@ impl Client {
         }
     }
 
+    pub async fn attach(&self, container_id: &str) -> eyre::Result<()> {
+        let client = &self.inner_client;
+        let uri = format!("http://localhost/containers/{}/attach?stream=1&stdout=1&stdin=1&stderr=1", container_id).parse::<Uri>()?;
+
+        let request = hyper::Request::post(uri)
+            // .header("Content-Type", "application/json")
+            .body(Body::empty())?;
+
+        let res = client.request(request).await?;
+
+        let mut body = res.into_body();
+        print_docker_encoded_stream(body).await?;
+
+        Ok(())
+    }
+
     pub async fn create_container(
         &self,
         args: CreateContainerArgs,
@@ -49,8 +65,30 @@ impl Client {
 
         let body = read_body_to_vec(res).await?;
 
-        // println!("{}", serde_json::from_slice::<serde_json::Value>(&body)?);
         Ok(serde_json::from_slice(&body)?)
+    }
+
+    pub async fn remove_container(
+        &self,
+        container_id: String,
+        force: bool,
+        remove_anonymouse_volumes: bool,
+    ) -> eyre::Result<()> {
+
+        let client = &self.inner_client;
+        let uri = format!("http://localhost/containers/{}", container_id).parse::<Uri>()?;
+
+        let request = hyper::Request::delete(uri)
+            .header("Content-Type", "application/json")
+            .body(
+            Body::from(serde_json::to_vec(&serde_json::json!({
+                "force": force,
+                "remove_anonymouse_volumes": remove_anonymouse_volumes,
+            })).unwrap())
+        )?;
+
+        let res = client.request(request).await?;
+        Ok(())
     }
 
     pub async fn start_container(&self, container_id: &str) -> eyre::Result<()> {
@@ -60,9 +98,12 @@ impl Client {
         let request = hyper::Request::post(uri).body(Body::empty())?;
 
         let res = client.request(request).await?;
+        if !res.status().is_success() {
+            let body = read_body_to_vec(res).await?;
+            // todo: This is a json response with a `message` field
+            eyre::bail!("start_container: {:?}", String::from_utf8_lossy(&body));
+        }
 
-        let _body = read_body_to_vec(res).await?;
-        // body should be empty
         Ok(())
     }
 
@@ -80,6 +121,20 @@ impl Client {
         // println!("{}", serde_json::from_slice::<serde_json::Value>(&body)?);
 
         Ok(serde_json::from_slice(&body)?)
+    }
+
+    pub async fn wait(&self, container_id: String) -> eyre::Result<()> {
+        let client = &self.inner_client;
+        let uri = format!("http://localhost/containers/{}/wait", container_id).parse::<Uri>()?;
+
+        let request = hyper::Request::post(uri).body(Body::empty())?;
+
+        let res = client.request(request).await?;
+
+        let body = read_body_to_vec(res).await?;
+        // println!("{}", serde_json::from_slice::<serde_json::Value>(&body)?);
+
+        Ok(())
     }
 
     pub async fn exec(&self, container_id: String, args: CreateExecArgs) -> eyre::Result<()> {
@@ -111,10 +166,10 @@ impl Client {
 
         let body = read_body_to_vec(res).await?;
 
-        println!(
-            "create_exec {}",
-            serde_json::from_slice::<serde_json::Value>(&body)?
-        );
+        // println!(
+        //     "create_exec {}",
+        //     serde_json::from_slice::<serde_json::Value>(&body)?
+        // );
         Ok(serde_json::from_slice(&body)?)
     }
 
@@ -178,4 +233,96 @@ async fn read_body_to_vec(res: hyper::Response<Body>) -> eyre::Result<Vec<u8>> {
         body.extend_from_slice(&chunk?);
     }
     Ok(body)
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u8)]
+enum StreamType {
+    Stdout = 0,
+    Stderr = 1,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum StreamTypeError {
+    #[error("invalid byte: {0}")]
+    InvalidByte(u8),
+}
+
+impl TryFrom<u8> for StreamType {
+    type Error = StreamTypeError;
+
+    fn try_from(byte: u8) -> Result<Self, Self::Error> {
+        match byte {
+            0 => Ok(StreamType::Stdout),
+            1 => Ok(StreamType::Stdout),
+            2 => Ok(StreamType::Stderr),
+            _ => Err(StreamTypeError::InvalidByte(byte)),
+        }
+    }
+}
+
+
+// Reads and prints out the docker encoded stream:
+// https://docs.docker.com/engine/api/v1.41/#operation/ContainerAttach
+//
+// The header contains the information which the stream writes (stdout or stderr). It also contains the size of the associated frame encoded in the last four bytes (uint32).
+//
+// It is encoded on the first eight bytes like this:
+//
+// header := [8]byte{STREAM_TYPE, 0, 0, 0, SIZE1, SIZE2, SIZE3, SIZE4}
+// STREAM_TYPE can be:
+//
+// 0: stdin (is written on stdout)
+// 1: stdout
+// 2: stderr
+// SIZE1, SIZE2, SIZE3, SIZE4 are the four bytes of the uint32 size encoded as big endian.
+//
+// Following the header is the payload, which is the specified number of bytes of STREAM_TYPE.
+//
+// The simplest way to implement this protocol is the following:
+//
+// Read 8 bytes.
+// Choose stdout or stderr depending on the first byte.
+// Extract the frame size from the last four bytes.
+// Read the extracted size and output it on the correct output.
+// Goto 1.
+// #[tracing::instrument(skip(body), err)]
+async fn print_docker_encoded_stream<>(body: Body) -> eyre::Result<()> {
+    let mut body = body;
+    let mut buf = Vec::with_capacity(128);
+    // let mut frame = Vec::with_capacity(64);
+
+    let mut header_is_decoded = false;
+    let mut stream_type = StreamType::Stdout;
+    let mut size = 0;
+
+    while let Some(chunk) = body.next().await {
+        buf.extend_from_slice(&chunk?);
+        // If we have enough bytes for a header, decode the header
+        if !header_is_decoded && buf.len() >= 8 {
+            stream_type = StreamType::try_from(buf[0])?;
+            size = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
+
+            header_is_decoded = true;
+
+            // Eat the header
+            buf.drain(..8);
+        }
+
+        // If we don't have enough bytes for the frame, keep reading
+        if buf.len() < size {
+            continue;
+        }
+
+        // If we have enough bytes for the frame, print it and reset the state
+        if header_is_decoded {
+            header_is_decoded = false;
+            match stream_type {
+                StreamType::Stdout => print!("{}", String::from_utf8_lossy(&buf[..size])),
+                StreamType::Stderr => eprint!("{}", String::from_utf8_lossy(&buf[..size])),
+            }
+            buf.drain(..size);
+        }
+    }
+    Ok(())
 }

@@ -1,3 +1,4 @@
+#![allow(dead_code, unused)]
 use maplit::hashmap;
 
 use container_type::ContainerType;
@@ -7,10 +8,10 @@ use crate::dockerapi::container_summary::ContainerSummary;
 use crate::dockerapi::create_container_args::CreateContainerArgs;
 use crate::dockerapi::create_exec_args::CreateExecArgs;
 
-pub mod config;
-pub mod container;
-pub mod container_type;
-pub mod dockerapi;
+mod config;
+mod container;
+mod container_type;
+mod dockerapi;
 
 const DOCKER_USER: &'static str = "cargo-sandbox-user";
 
@@ -39,16 +40,29 @@ async fn find_container(
     Ok(list_containers_response.containers.into_iter().next())
 }
 
-async fn get_or_create_container(
+async fn find_and_remove_container(
     client: &Client,
     project_name: &str,
     container_type: ContainerType,
-    network_disabled: bool,
-) -> eyre::Result<ContainerSummary> {
+) -> eyre::Result<()> {
     let container = find_container(client, project_name, container_type).await?;
     if let Some(container) = container {
-        return Ok(container);
+        client
+            .remove_container(container.id, false, true)
+            .await?;
     }
+
+    Ok(())
+}
+
+async fn create_container(
+    client: &Client,
+    project_name: &str,
+    container_type: ContainerType,
+    command: Vec<String>,
+    network_disabled: bool,
+) -> eyre::Result<ContainerSummary> {
+    // let binds: Vec<String> = vec![];
     let binds = vec![format!(
         "{}/:/home/{DOCKER_USER}/{}:cached",
         std::env::current_dir()?.to_str().unwrap(),
@@ -59,7 +73,8 @@ async fn get_or_create_container(
 
     client
         .create_container(CreateContainerArgs {
-            cmd: vec!["sleep".into(), "infinity".into()],
+            cmd: command,
+            // entrypoint: command.join(" "),
             image: format!("cargo-sandbox-{}", container_type.as_str()),
             labels: hashmap! {
                 "cargo-sandbox.version".into() => env!("CARGO_PKG_VERSION").to_string(),
@@ -69,7 +84,11 @@ async fn get_or_create_container(
             working_dir: format!("/home/{DOCKER_USER}/{project_name}"),
             binds,
             user,
+            tty: false,
             network_disabled: Some(network_disabled),
+            attach_stdout: true,
+            attach_stderr: true,
+            attach_stdin: true,
             ..Default::default()
         })
         .await?;
@@ -98,116 +117,95 @@ async fn start_container(client: &Client, container: &ContainerSummary) -> eyre:
     Ok(())
 }
 
-async fn cargo_build(client: &Client, project_name: &str, args: Vec<String>) -> eyre::Result<()> {
+fn make_cargo_cmd(
+    riff: bool,
+    args: Vec<String>,
+) -> Vec<String> {
+    if riff {
+        let mut cargo_cmd = vec!["riff".to_string(), "run".to_string(), "cargo".to_string()];
+        cargo_cmd.extend(args);
+        cargo_cmd
+    } else {
+        let mut cargo_cmd = vec!["cargo".to_string()];
+        cargo_cmd.extend(args);
+        cargo_cmd
+    }
+}
+
+async fn ephemeral_exec(client: &Client, project_name: &str, cargo_command: Vec<String>, container_type: ContainerType) -> eyre::Result<()> {
+
+    // First we should remove the container if it exists
+    find_and_remove_container(client, project_name, container_type).await?;
+
     let build_container =
-        get_or_create_container(client, project_name, ContainerType::Build, false).await?;
+        create_container(
+            client,
+            project_name,
+            container_type,
+            cargo_command,
+            false
+        ).await?;
+
+    let attach_client = client.clone();
+    let container_id = build_container.id.clone();
+    let attach = tokio::spawn(async move {
+        println!("attaching");
+        attach_client.attach(&container_id).await?;
+        println!("attached");
+        Ok::<(), eyre::Error>(())
+    });
+
+    println!("starting");
     start_container(client, &build_container).await?;
+    println!("started");
 
-    let cargo_cmd = "source ~/.profile && riff run cargo ".to_owned() + &args.join(" ");
-    let cmd = vec!["/bin/bash".into(), "-c".into(), cargo_cmd];
+    attach.await?;
 
-    println!("executing command");
-    client
-        .exec(
-            build_container.id,
-            CreateExecArgs {
-                attach_stdin: true,
-                attach_stdout: true,
-                attach_stderr: true,
-                detach_keys: "".to_string(),
-                tty: false,
-                cmd,
-                env: get_env(),
-            },
-        )
-        .await?;
+    client.remove_container(build_container.id, true, true).await?;
+
+    Ok(())
+}
+
+async fn cargo_build(client: &Client, project_name: &str, args: Vec<String>) -> eyre::Result<()> {
+    let cargo_cmd = make_cargo_cmd(false, args);
+    ephemeral_exec(client, project_name, cargo_cmd, ContainerType::Build).await?;
 
     Ok(())
 }
 
 async fn cargo_check(client: &Client, project_name: &str, args: Vec<String>) -> eyre::Result<()> {
-    let build_container =
-        get_or_create_container(client, project_name, ContainerType::Build, false).await?;
-    start_container(client, &build_container).await?;
-
-    let cargo_cmd = "source ~/.profile && riff run cargo ".to_owned() + &args.join(" ");
-    let cmd = vec!["/bin/bash".into(), "-c".into(), cargo_cmd];
-
-    println!("executing command, {:#?}", &cmd);
-    println!("container id {}", &build_container.id);
-
-    client
-        .exec(
-            build_container.id,
-            CreateExecArgs {
-                attach_stdin: true,
-                attach_stdout: true,
-                attach_stderr: true,
-                detach_keys: "".to_string(),
-                tty: false,
-                cmd,
-                env: get_env(),
-            },
-        )
-        .await?;
+    let cargo_cmd = make_cargo_cmd(false, args);
+    ephemeral_exec(client, project_name, cargo_cmd, ContainerType::Build).await?;
 
     Ok(())
 }
 
-async fn cargo_publish(client: &Client, project_name: &str, args: Vec<String>) -> eyre::Result<()> {
-    println!("building");
-    // If `--no-verify` is provided, don't run the build
-    let mut publish_args = args.clone();
-    if !args.contains(&"--no-verify".to_string()) {
-        cargo_check(client, project_name, vec!["check".into()]).await?;
-        publish_args.insert(0, "--no-verify".to_string());
+fn insert_after(args: &mut Vec<String>, needle: &str, insert: String) {
+    let index = args.iter().position(|arg| arg == needle).unwrap();
+    args.insert(index + 1, insert.to_string());
+}
+
+async fn cargo_publish(client: &Client, project_name: &str, mut args: Vec<String>) -> eyre::Result<()> {
+    let cargo_cmd = make_cargo_cmd(false, args);
+    // First verify the package unless we are told not to
+    if !cargo_cmd.iter().any( |a| a == "--no-verify") {
+        let mut cargo_cmd = cargo_cmd.clone();
+        // We only want to verify, so we ensure that `dry-run` is present in the args
+        if !cargo_cmd.iter().any(|a| a == "--dry-run") {
+            insert_after(&mut cargo_cmd, "publish", "--dry-run".to_string());
+        }
+        ephemeral_exec(client, project_name, cargo_cmd, ContainerType::Build).await?;
     }
 
-    println!("publishing");
-    let build_container =
-        get_or_create_container(client, project_name, ContainerType::Publish, false).await?;
-    start_container(client, &build_container).await?;
-    // Ensure that `--no-verify` is passed to cargo publish
-    client
-        .exec(
-            build_container.id,
-            CreateExecArgs {
-                attach_stdin: true,
-                attach_stdout: true,
-                attach_stderr: true,
-                detach_keys: "".to_string(),
-                tty: false,
-                cmd: [vec!["cargo".into()], publish_args].concat(),
-                env: get_env(),
-            },
-        )
-        .await?;
-    Ok(())
-}
-
-
-async fn cargo_login(client: &Client, project_name: &str, args: Vec<String>) -> eyre::Result<()> {
-    println!("building");
-    let build_container =
-        get_or_create_container(client, project_name, ContainerType::Publish, true).await?;
-    start_container(client, &build_container).await?;
-
-    println!("login");
-
-    client
-        .exec(
-            build_container.id,
-            CreateExecArgs {
-                attach_stdin: true,
-                attach_stdout: true,
-                attach_stderr: true,
-                detach_keys: "".to_string(),
-                tty: false,
-                cmd: [vec!["cargo".into()], args].concat(),
-                env: get_env(),
-            },
-        )
-        .await?;
+    // Second, publish the package unless we are told not to
+    if !cargo_cmd.iter().any(|a| a == "--dry-run") {
+        let mut cargo_cmd = cargo_cmd.clone();
+        // We only want to publish, so we ensure that `no-verify` is present in the args
+        if !cargo_cmd.iter().any(|a| a == "--no-verify") {
+            insert_after(&mut cargo_cmd, "publish", "--very-verify".to_string());
+        }
+        ephemeral_exec(client, project_name, cargo_cmd, ContainerType::Publish).await?;
+    }
     Ok(())
 }
 
@@ -266,11 +264,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let client = Client::local("/var/run/docker.sock");
             cargo_publish(&client, &project_name, argv).await?;
         }
-        "login" => {
-            let project_name = get_project_name();
-            let client = Client::local("/var/run/docker.sock");
-            cargo_login(&client, &project_name, argv).await?;
-        }
+        // "login" => {
+        //     let project_name = get_project_name();
+        //     let client = Client::local("/var/run/docker.sock");
+        //     cargo_login(&client, &project_name, argv).await?;
+        // }
         unknown => {
             println!("Unknown command: {unknown}");
         }
